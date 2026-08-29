@@ -1,0 +1,57 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#07111F"/>
+      <stop offset="1" stop-color="#0F2A43"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="720" fill="url(#bg)"/>
+
+  <g opacity="0.25">
+    <circle cx="1060" cy="120" r="220" fill="#22D3EE"/>
+    <circle cx="1180" cy="620" r="260" fill="#8B5CF6"/>
+    <circle cx="150" cy="630" r="210" fill="#0EA5E9"/>
+  </g>
+
+  <rect x="90" y="60" width="1100" height="600" rx="24" fill="url(#panel)" stroke="#1F2937"/>
+
+  <rect x="120" y="100" width="1040" height="52" rx="12" fill="#0B1220"/>
+  <circle cx="155" cy="126" r="8" fill="#F87171"/>
+  <circle cx="182" cy="126" r="8" fill="#FBBF24"/>
+  <circle cx="209" cy="126" r="8" fill="#34D399"/>
+  <text x="240" y="136" fill="#E5E7EB" font-size="28" font-family="Segoe UI, Arial, sans-serif">JARVIS OS V2</text>
+
+  <rect x="120" y="182" width="500" height="390" rx="20" fill="#0B1220" stroke="#1F2937"/>
+  <rect x="160" y="220" width="240" height="18" rx="9" fill="#22D3EE" opacity="0.9"/>
+  <rect x="160" y="258" width="420" height="14" rx="7" fill="#D1D5DB" opacity="0.7"/>
+  <rect x="160" y="286" width="360" height="14" rx="7" fill="#D1D5DB" opacity="0.5"/>
+
+  <rect x="160" y="340" width="260" height="170" rx="18" fill="url(#accent)" opacity="0.94"/>
+  <circle cx="225" cy="390" r="48" fill="#E0F2FE" opacity="0.52"/>
+  <text x="292" y="386" fill="#E2E8F0" font-size="34" font-family="Segoe UI, Arial, sans-serif">AI</text>
+  <text x="292" y="430" fill="#F8FAFC" font-size="28" font-family="Segoe UI, Arial, sans-serif">assistant</text>
+
+  <rect x="660" y="182" width="500" height="390" rx="20" fill="#0B1220" stroke="#1F2937"/>
+  <rect x="693" y="220" width="195" height="44" rx="12" fill="#111827"/>
+  <text x="720" y="250" fill="#22D3EE" font-size="28" font-family="Segoe UI, Arial, sans-serif">Live</text>
+  <rect x="693" y="282" width="430" height="52" rx="12" fill="#111827"/>
+  <text x="720" y="316" fill="#E5E7EB" font-size="26" font-family="Segoe UI, Arial, sans-serif">How can I help today?</text>
+
+  <rect x="693" y="360" width="314" height="154" rx="16" fill="#111827"/>
+  <text x="720" y="405" fill="#E5E7EB" font-size="22" font-family="Segoe UI, Arial, sans-serif">Voice agent</text>
+  <text x="720" y="440" fill="#94A3B8" font-size="18" font-family="Segoe UI, Arial, sans-serif">File actions</text>
+  <text x="720" y="470" fill="#94A3B8" font-size="18" font-family="Segoe UI, Arial, sans-serif">Browser tools</text>
+  <text x="720" y="500" fill="#94A3B8" font-size="18" font-family="Segoe UI, Arial, sans-serif">Presentation studio</text>
+
+  <rect x="1025" y="360" width="98" height="98" rx="20" fill="url(#accent)"/>
+  <text x="1044" y="420" fill="#F8FAFC" font-size="36" font-family="Segoe UI, Arial, sans-serif">▶</text>
+</svg>
