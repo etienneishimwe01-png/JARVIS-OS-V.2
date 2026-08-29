@@ -10,6 +10,7 @@ from typing import Callable
 
 from agent.planner       import create_plan, replan
 from agent.error_handler import analyze_error, generate_fix, ErrorDecision
+from agent.registry import ConfirmationRequired, get_tool
 
 
 def get_base_dir() -> Path:
@@ -244,94 +245,18 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
         return content
 
 def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
+    spec = get_tool(tool)
+    if spec is None:
+        raise ValueError(f"Tool '{tool}' is unavailable. No action was executed.")
+    missing = spec.validate(parameters)
+    if missing:
+        raise ValueError(f"Tool '{tool}' is missing required parameters: {', '.join(missing)}")
 
-    if tool == "open_app":
-        from actions.open_app import open_app
-        return open_app(parameters=parameters, player=None) or "Done."
-
-    elif tool == "web_search":
-        from actions.web_search import web_search
-        return web_search(parameters=parameters, player=None) or "Done."
-    elif tool == "deep_research":
-        from actions.deep_research import deep_research
-        return deep_research(parameters=parameters, player=None) or "Done."
-    elif tool == "game_updater":
-        from actions.game_updater import game_updater
-        return game_updater(parameters=parameters, player=None, speak=speak) or "Done."
-    elif tool == "browser_control":
-        from actions.browser_control import browser_control
-        return browser_control(parameters=parameters, player=None) or "Done."
-
-    elif tool == "file_controller":
-        from actions.file_controller import file_controller
-        return file_controller(parameters=parameters, player=None) or "Done."
-
-    elif tool == "media_control":
-        from actions.media_control import media_control
-        return media_control(parameters=parameters, player=None) or "Done."
-
-    elif tool == "code_helper":
-        from actions.code_helper import code_helper
-        return code_helper(parameters=parameters, player=None, speak=speak) or "Done."
-
-    elif tool == "dev_agent":
-        from actions.dev_agent import dev_agent
-        return dev_agent(parameters=parameters, player=None, speak=speak) or "Done."
-
-    elif tool == "screen_process":
-        from actions.screen_processor import screen_process
-        screen_process(parameters=parameters, player=None)
-        return "Screen captured and analyzed."
-
-    elif tool == "send_message":
-        from actions.send_message import send_message
-        return send_message(parameters=parameters, player=None) or "Done."
-
-    elif tool == "email_control":
-        from actions.email_control import email_control
-        return email_control(parameters=parameters, player=None) or "Done."
-
-    elif tool == "reminder":
-        from actions.reminder import reminder
-        return reminder(parameters=parameters, player=None) or "Done."
-
-    elif tool == "youtube_video":
-        from actions.youtube_video import youtube_video
-        return youtube_video(parameters=parameters, player=None) or "Done."
-
-    elif tool == "weather_report":
-        from actions.weather_report import weather_action
-        return weather_action(parameters=parameters, player=None) or "Done."
-
-    elif tool == "computer_settings":
-        from actions.computer_settings import computer_settings
-        return computer_settings(parameters=parameters, player=None) or "Done."
-
-    elif tool == "desktop_control":
-        from actions.desktop import desktop_control
-        return desktop_control(parameters=parameters, player=None) or "Done."
-
-    elif tool == "computer_control":
-        from actions.computer_control import computer_control
-        return computer_control(parameters=parameters, player=None) or "Done."
-
-    elif tool == "generated_code":
-        description = parameters.get("description", "")
-        if not description:
-            raise ValueError("generated_code requires a 'description' parameter.")
-        return _run_generated_code(description, speak=speak)
-
-    elif tool == "flight_finder":
-        from actions.flight_finder import flight_finder
-        return flight_finder(parameters=parameters, player=None, speak=speak) or "Done."
-
-    elif tool == "create_presentation":
-        from actions.presentation_maker import create_presentation
-        return create_presentation(parameters=parameters, player=None) or "Done."
-
-    else:
-        print(f"[Executor] ⚠️ Unknown tool '{tool}' — falling back to generated_code")
-        return _run_generated_code(f"Accomplish this task: {parameters}", speak=speak)
+    handler = spec.load_handler()
+    kwargs = {"parameters": parameters, "player": None}
+    if tool in {"game_updater", "code_helper", "dev_agent", "flight_finder"}:
+        kwargs["speak"] = speak
+    return handler(**kwargs) or "Done."
 
 def _goal_requests_file_save(goal: str) -> bool:
     g = str(goal or "").lower()
@@ -436,15 +361,21 @@ class AgentExecutor:
         goal:        str,
         speak:       Callable | None        = None,
         cancel_flag: threading.Event | None = None,
+        confirm:     Callable[[str, dict], bool] | None = None,
+        plan:        dict | None = None,
+        completed_steps: list | None = None,
+        step_results: dict | None = None,
+        start_index: int = 0,
+        approved_confirmation: tuple | None = None,
     ) -> str:
         print(f"\n[Executor] 🎯 Goal: {goal}")
         self._awareness_goal(goal)
 
         replan_attempts = 0
-        completed_steps = []
-        step_results    = {}
+        completed_steps = list(completed_steps or [])
+        step_results    = dict(step_results or {})
         self.last_step_results = step_results 
-        plan            = _ensure_required_save_step(create_plan(goal), goal)
+        plan            = plan or _ensure_required_save_step(create_plan(goal), goal)
 
         while True:
             steps = plan.get("steps", [])
@@ -458,7 +389,9 @@ class AgentExecutor:
             failed_step  = None
             failed_error = ""
 
-            for step in steps:
+            for step_index, step in enumerate(steps):
+                if step_index < start_index:
+                    continue
                 if cancel_flag and cancel_flag.is_set():
                     if speak: speak("Task cancelled, sir.")
                     return "Task cancelled."
@@ -469,6 +402,25 @@ class AgentExecutor:
                 params   = step.get("parameters", {})
 
                 params = _inject_context(params, tool, step_results, goal=goal)
+
+                spec = get_tool(tool)
+                if spec is None:
+                    failed_step = step
+                    failed_error = f"Tool '{tool}' is unavailable."
+                    success = False
+                    break
+                if spec.needs_confirmation(params):
+                    is_approved = approved_confirmation == (step_index, tool)
+                    if not is_approved and (confirm is None or not confirm(tool, params)):
+                        error = ConfirmationRequired(
+                            f"Confirmation required before running {tool}. No action was executed."
+                        )
+                        error.plan = plan
+                        error.completed_steps = list(completed_steps)
+                        error.step_results = dict(step_results)
+                        error.step_index = step_index
+                        error.step = step
+                        raise error
 
                 print(f"\n[Executor] ▶️ Step {step_num}: [{tool}] {desc}")
 

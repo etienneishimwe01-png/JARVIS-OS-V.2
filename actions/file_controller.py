@@ -168,28 +168,7 @@ def create_folder(path: str, name: str = "") -> str:
 
 
 def delete_file(path: str, name: str = "") -> str:
-    try:
-        base   = _resolve_path(path)
-        target = (base / name) if name else base
-        if not _is_safe_path(target):
-            return f"Access denied: {target}"
-        if not target.exists():
-            return f"Not found: {target.name}"
-
-        # Güvenli dizin kontrolü — kritik kullanıcı klasörlerini koru
-        protected = {
-            _get_desktop(), _get_downloads(), _get_documents(),
-            _get_pictures(), _get_music(), _get_videos(), Path.home()
-        }
-        if target.resolve() in {p.resolve() for p in protected}:
-            return f"Protected directory, cannot delete: {target.name}"
-
-        return _safe_trash(target)
-
-    except PermissionError:
-        return f"Permission denied: {path}"
-    except Exception as e:
-        return f"Could not delete: {e}"
+    return "File and folder deletion is disabled in JARVIS. No files were deleted."
 
 
 def move_file(path: str, name: str = "", destination: str = "") -> str:
@@ -430,6 +409,8 @@ def get_largest_files(path: str = "downloads", count: int = 10) -> str:
 def get_disk_usage(path: str = "home") -> str:
     try:
         target = _resolve_path(path)
+        if not _is_safe_path(target):
+            return f"Access denied: {target}"
         usage  = shutil.disk_usage(target)
         pct    = usage.used / usage.total * 100
         return (

@@ -34,6 +34,16 @@ Open `.env`, add your `GEMINI_API_KEY`, then launch JARVIS:
 jarvis
 ```
 
+To create a desktop shortcut after setup, run PowerShell from the project root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\create_jarvis_shortcut.ps1
+```
+
+The shortcut uses the project icon, starts in the project directory, and runs
+the canonical Windows launcher. The launcher activates `.venv`, installs only
+when dependencies changed, checks `.env`, and starts the real desktop UI.
+
 You only need to run setup once. Activate `.venv` when opening a new terminal,
 then type `jarvis`.
 

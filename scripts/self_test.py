@@ -64,7 +64,7 @@ def _ai_voice() -> CapabilityResult:
         "tests.test_qa_system.QAModeSafetyTests.test_live_audio_extraction_ignores_non_audio_parts_without_data_shortcut",
         "tests.test_qa_system.QAModeSafetyTests.test_live_config_uses_fast_end_of_speech_detection",
         "tests.test_qa_system.ToolContractTests.test_declared_tool_inventory_is_complete_and_unique",
-        "tests.test_startup_clap.StartupClapTests.test_two_distinct_claps_unlock_startup",
+        "tests.test_startup_clap.StartupWakePhraseTests.test_wake_phrase_unlocks_startup",
     )
     passed, output = _run_tests(*tests)
     if not passed:
@@ -195,11 +195,7 @@ def _files() -> CapabilityResult:
             root = Path(directory)
             destination = root / "moved"
             destination.mkdir()
-            with patch.object(file_controller, "_SAFE_ROOTS", [root]), patch.object(
-                file_controller,
-                "_safe_trash",
-                side_effect=lambda target: (target.unlink(), f"Moved to test trash: {target.name}")[1],
-            ):
+            with patch.object(file_controller, "_SAFE_ROOTS", [root]):
                 created = file_controller.create_file(str(root), "audit.txt", "capability audit")
                 read = file_controller.read_file(str(root), "audit.txt")
                 renamed = file_controller.rename_file(str(root), "audit.txt", "renamed.txt")
@@ -210,14 +206,14 @@ def _files() -> CapabilityResult:
                 "capability audit" in read,
                 "Renamed" in renamed,
                 "Moved" in moved,
-                "test trash" in deleted,
-                not (destination / "renamed.txt").exists(),
+                "deletion is disabled" in deleted.lower(),
+                (destination / "renamed.txt").exists(),
             ))
             if not passed:
-                raise RuntimeError("create/read/rename/move/delete contract did not complete")
+                raise RuntimeError("create/read/rename/move/delete-refusal contract did not complete")
     except Exception as exc:
         return CapabilityResult("FILES", "FAIL", str(exc))
-    return CapabilityResult("FILES", "PASS", "read, create, rename, move, and recoverable-delete path pass in an isolated workspace")
+    return CapabilityResult("FILES", "PASS", "read, create, rename, move, and deletion-refusal paths pass in an isolated workspace")
 
 
 def _screen_permission() -> bool | None:

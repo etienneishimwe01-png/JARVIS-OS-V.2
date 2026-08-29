@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Any
 from memory.task_history import record_task
+from agent.confirmation import ConfirmationManager, ConfirmationStatus
 
 
 class TaskStatus(Enum):
@@ -13,6 +14,7 @@ class TaskStatus(Enum):
     COMPLETED  = "completed"
     FAILED     = "failed"
     CANCELLED  = "cancelled"
+    WAITING_CONFIRMATION = "waiting_confirmation"
 
 
 class TaskPriority(Enum):
@@ -41,6 +43,7 @@ class Task:
     warnings:    list[str]  = field(compare=False, default_factory=list)
     user_id:     str | None = field(compare=False, default=None)
     cancel_flag: threading.Event = field(compare=False, default_factory=threading.Event)
+    resume_data: dict | None = field(compare=False, default=None)
 
 
 class TaskQueue:
@@ -55,6 +58,8 @@ class TaskQueue:
         self._active_count   = 0
         self._executor       = None
         self._awareness      = awareness
+        self.confirmations  = ConfirmationManager()
+        self.confirmations.add_listener(self._on_confirmation_resolved)
 
     def _get_executor(self):
         if self._executor is None:
@@ -177,6 +182,7 @@ class TaskQueue:
             if task in self._queue:
                 self._queue.remove(task)
             print(f"[TaskQueue] 🚫 Task cancelled: [{task_id}]")
+        self.confirmations.cancel(task_id)
         if on_cancel:
             try:
                 on_cancel()
@@ -185,6 +191,52 @@ class TaskQueue:
         with self._condition:
             self._condition.notify_all()
         return True
+
+    def approve(self, task_id: str) -> bool:
+        request = self.confirmations.resolve(task_id, True)
+        return bool(request and request.status == ConfirmationStatus.APPROVED)
+
+    def deny(self, task_id: str) -> bool:
+        request = self.confirmations.resolve(task_id, False)
+        return bool(request and request.status == ConfirmationStatus.DENIED)
+
+    def pending_confirmations(self):
+        return self.confirmations.pending()
+
+    def add_confirmation_listener(self, listener):
+        self.confirmations.add_listener(listener)
+
+    def _on_confirmation_resolved(self, request) -> None:
+        if request.status == ConfirmationStatus.APPROVED:
+            with self._condition:
+                task = self._tasks.get(request.task_id)
+                if not task or task.status != TaskStatus.WAITING_CONFIRMATION:
+                    return
+                resume_data = task.resume_data or {}
+                resume_data["approved_confirmation"] = (
+                    resume_data.get("step_index", 0), request.tool
+                )
+                task.resume_data = resume_data
+                task.status = TaskStatus.RUNNING
+                task.phase = "Resuming"
+                self._active_count += 1
+            threading.Thread(
+                target=self._run_task,
+                args=(task,),
+                daemon=True,
+                name=f"AgentTask-{task.task_id}-resume",
+            ).start()
+        elif request.status in {ConfirmationStatus.DENIED, ConfirmationStatus.EXPIRED, ConfirmationStatus.CANCELLED}:
+            with self._lock:
+                task = self._tasks.get(request.task_id)
+                if not task or task.status != TaskStatus.WAITING_CONFIRMATION:
+                    return
+                task.status = TaskStatus.CANCELLED
+                task.phase = "Cancelled"
+                task.error = f"Confirmation {request.status.value}."
+                task.resume_data = None
+            if task.speak:
+                task.speak("Understood. I cancelled that action.")
 
 
     def cancel_running(self, *args, **kwargs):
@@ -296,10 +348,17 @@ class TaskQueue:
                 result = task.result
             else:
                 executor = self._get_executor()
+                resume = task.resume_data or {}
+                task.resume_data = None
                 result = executor.execute(
                     goal=task.goal,
                     speak=task.speak,
                     cancel_flag=task.cancel_flag,
+                    plan=resume.get("plan"),
+                    completed_steps=resume.get("completed_steps"),
+                    step_results=resume.get("step_results"),
+                    start_index=resume.get("step_index", 0),
+                    approved_confirmation=resume.get("approved_confirmation"),
                 )
                 step_results = getattr(executor, "last_step_results", {}) or {}
                 if step_results:
@@ -365,30 +424,61 @@ class TaskQueue:
         except Exception as e:
             with self._lock:
                 cancelled = task.cancel_flag.is_set()
-                task.status = TaskStatus.CANCELLED if cancelled else TaskStatus.FAILED
+                waiting_confirmation = e.__class__.__name__ == "ConfirmationRequired"
+                if waiting_confirmation:
+                    task.resume_data = {
+                        "plan": getattr(e, "plan", None),
+                        "completed_steps": getattr(e, "completed_steps", []),
+                        "step_results": getattr(e, "step_results", {}),
+                        "step_index": getattr(e, "step_index", 0),
+                        "approved_confirmation": None,
+                    }
+                task.status = (
+                    TaskStatus.CANCELLED if cancelled
+                    else TaskStatus.WAITING_CONFIRMATION if waiting_confirmation
+                    else TaskStatus.FAILED
+                )
                 task.error = "" if cancelled else str(e)
-                task.phase = "Cancelled" if cancelled else "Failed"
+                task.phase = (
+                    "Cancelled" if cancelled
+                    else "Waiting for confirmation" if waiting_confirmation
+                    else "Failed"
+                )
                 self._active_count -= 1
+
+            if waiting_confirmation:
+                request = self.confirmations.request(
+                    task_id=task.task_id,
+                    tool=getattr(e, "step", {}).get("tool", "unknown"),
+                    explanation=getattr(e, "step", {}).get("description", str(e)),
+                    risk="medium",
+                    parameters=getattr(e, "step", {}).get("parameters", {}),
+                )
+                if task.speak:
+                    task.speak(
+                        f"Confirmation required for {request.tool}. "
+                        f"{request.explanation} Say yes to approve or no to cancel."
+                    )
 
             failure_msg = (
                 f"Task cancelled: {task.goal[:90]}"
                 if cancelled else f"Task failed: {task.goal[:90]} — {e}"
             )
 
-            if self._awareness and task.kind != "research":
+            if self._awareness and task.kind != "research" and not waiting_confirmation:
                 try:
                     self._awareness.record_event(failure_msg)
                     self._awareness.clear_active_tool()
                 except Exception as ae:
                     print(f"[TaskQueue] ⚠️ awareness failure update failed: {ae}")
 
-            if task.speak and not cancelled:
+            if task.speak and not cancelled and not waiting_confirmation:
                 try:
                     task.speak(failure_msg)
                 except Exception as se:
                     print(f"[TaskQueue] ⚠️ speak failure notification failed: {se}")
 
-            if task.kind != "research":
+            if task.kind != "research" and not waiting_confirmation:
                 try:
                     record_task(
                         task_id=task.task_id,
@@ -402,6 +492,8 @@ class TaskQueue:
 
             if cancelled:
                 print(f"[TaskQueue] 🚫 Cancelled: [{task.task_id}]")
+            elif waiting_confirmation:
+                print(f"[TaskQueue] ⏸️ Waiting for confirmation: [{task.task_id}]")
             else:
                 print(f"[TaskQueue] ❌ Failed: [{task.task_id}] {e}")
 

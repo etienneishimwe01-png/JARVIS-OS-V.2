@@ -658,6 +658,19 @@ def _watch_and_shutdown(steam_path: Path, speak=None,
         speak("Download taking too long. Cancelling auto-shutdown.")
 
 
+def _auto_shutdown_is_authorized(parameters: dict) -> bool:
+    if str(parameters.get("shutdown_when_done", "false")).lower() != "true":
+        return False
+    confirmed = str(parameters.get("confirmed", "")).lower()
+    if confirmed not in {"yes", "true", "1", "confirm"}:
+        return False
+    target = " ".join(
+        str(parameters.get(key, "") or "").lower()
+        for key in ("description", "target", "text")
+    )
+    return any(word in target for word in ("computer", "system", "pc", "machine"))
+
+
 def _find_epic_exe() -> Path | None:
     if is_windows(): return _find_epic_exe_windows()
     if is_mac():     return _find_epic_exe_mac()
@@ -933,7 +946,13 @@ def game_updater(parameters: dict, player=None, speak=None) -> str:
     app_id    = (p.get("app_id")    or "").strip() or None
     hour      = int(p.get("hour",   3))
     minute    = int(p.get("minute", 0))
-    shutdown  = str(p.get("shutdown_when_done", "false")).lower() == "true"
+    shutdown_requested = str(p.get("shutdown_when_done", "false")).lower() == "true"
+    shutdown = _auto_shutdown_is_authorized(p)
+    if shutdown_requested and not shutdown:
+        return (
+            "Auto-shutdown was refused. Specify the computer as the target and "
+            "confirm explicitly with confirmed=yes."
+        )
 
     results = []
 

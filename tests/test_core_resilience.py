@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from actions import computer_settings, file_controller, flight_finder, instagram_browser, weather_report, youtube_video
+from actions import computer_settings, file_controller, flight_finder, game_updater, instagram_browser, weather_report, youtube_video
 from agent import error_handler
 from agent.task_queue import TaskPriority, TaskQueue
 from api import status as api_status
@@ -85,6 +85,25 @@ class CoreResilienceTests(unittest.TestCase):
             config_manager.save_api_keys("test-token-value-1234567890")
             self.assertEqual(config_manager.load_api_keys()["gemini_api_key"], "test-token-value-1234567890")
 
+    def test_ui_persists_verified_api_key_to_project_config(self):
+        import ui
+        with tempfile.TemporaryDirectory() as directory:
+            api_file = Path(directory) / "api_keys.json"
+            with patch.object(ui, "API_FILE", api_file), patch.object(ui, "CONFIG_DIR", Path(directory)):
+                ui._persist_api_key_config_for_setup("test-token-value-1234567890", "windows", api_file)
+                self.assertTrue(api_file.exists())
+                data = json.loads(api_file.read_text(encoding="utf-8"))
+                self.assertEqual(data["gemini_api_key"], "test-token-value-1234567890")
+                self.assertEqual(data["os_system"], "windows")
+
+    def test_ui_reads_saved_api_key_from_project_config(self):
+        import ui
+        with tempfile.TemporaryDirectory() as directory:
+            api_file = Path(directory) / "api_keys.json"
+            api_file.write_text(json.dumps({"gemini_api_key": "test-token-value-1234567890"}), encoding="utf-8")
+            with patch.object(ui, "API_FILE", api_file):
+                self.assertEqual(ui._read_candidate_api_key_from_config(), "test-token-value-1234567890")
+
     def test_task_queue_submit_status_and_cancel_without_worker(self):
         queue = TaskQueue()
         task_id = queue.submit("QA task", priority=TaskPriority.HIGH)
@@ -136,6 +155,26 @@ class PureActionContractTests(unittest.TestCase):
             with patch.object(file_controller, "_SAFE_ROOTS", [root]):
                 self.assertIn("hello.txt", file_controller.list_files(str(root)))
                 self.assertIn("Access denied", file_controller.list_files(str(root.parent)))
+
+    def test_file_controller_always_refuses_deletion(self):
+        result = file_controller.file_controller({
+            "action": "delete",
+            "path": "desktop",
+            "name": "example.txt",
+        })
+        self.assertIn("deletion is disabled", result.lower())
+
+    def test_game_auto_shutdown_requires_explicit_confirmation_and_target(self):
+        self.assertFalse(game_updater._auto_shutdown_is_authorized({
+            "shutdown_when_done": "true",
+            "confirmed": "yes",
+            "description": "shut down JARVIS when updates finish",
+        }))
+        self.assertTrue(game_updater._auto_shutdown_is_authorized({
+            "shutdown_when_done": "true",
+            "confirmed": "yes",
+            "description": "shut down my computer when updates finish",
+        }))
 
 
 if __name__ == "__main__":

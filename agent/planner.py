@@ -3,6 +3,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from agent.registry import tool_descriptions
 
 
 def get_base_dir() -> Path:
@@ -13,6 +14,14 @@ def get_base_dir() -> Path:
 
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+INSTRUCTIONS_PATH = BASE_DIR / "JARVIS.md"
+
+
+def _load_instructions() -> str:
+    try:
+        return INSTRUCTIONS_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 PLANNER_PROMPT = """You are the planning module of MARK XXV, a personal AI assistant.
@@ -263,7 +272,13 @@ def create_plan(goal: str, context: str = "") -> dict:
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel(
         model_name="gemini-2.5-flash-lite",
-        system_instruction=PLANNER_PROMPT
+        system_instruction=(
+            PLANNER_PROMPT
+            + "\n\nCURRENT REGISTERED TOOLS (use only these names):\n"
+            + tool_descriptions()
+            + "\n\nJARVIS OPERATING INSTRUCTIONS:\n"
+            + _load_instructions()
+        )
     )
 
     user_input = f"Goal: {goal}"
@@ -432,7 +447,13 @@ def replan(goal: str, completed_steps: list, failed_step: dict, error: str) -> d
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel(
         model_name="gemini-2.5-flash",
-        system_instruction=PLANNER_PROMPT
+        system_instruction=(
+            PLANNER_PROMPT
+            + "\n\nCURRENT REGISTERED TOOLS (use only these names):\n"
+            + tool_descriptions()
+            + "\n\nJARVIS OPERATING INSTRUCTIONS:\n"
+            + _load_instructions()
+        )
     )
 
     completed_summary = "\n".join(

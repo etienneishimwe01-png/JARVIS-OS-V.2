@@ -94,6 +94,47 @@ def _normalize_graphics_quality(quality: str | None) -> str:
     return value
 
 
+def _read_candidate_api_key_from_config() -> str:
+    """Read any saved Gemini key from the project config before prompting the user again."""
+    try:
+        if API_FILE.exists():
+            try:
+                data = json.loads(API_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if isinstance(data, dict):
+                key = str(data.get("gemini_api_key") or data.get("GEMINI_API_KEY") or "").strip()
+                if key:
+                    return key
+    except Exception:
+        pass
+
+    try:
+        from memory.config_manager import get_gemini_key
+        key = str(get_gemini_key() or "").strip()
+        if key:
+            return key
+    except Exception:
+        pass
+    return ""
+
+
+def _persist_api_key_config_for_setup(api_key: str, os_name: str, config_path: Path = API_FILE) -> None:
+    key = str(api_key or "").strip()
+    if not key:
+        return
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+    except Exception:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg["gemini_api_key"] = key
+    cfg["os_system"] = os_name
+    config_path.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
+
+
 def _read_ui_settings() -> dict:
     try:
         if UI_SETTINGS_FILE.exists():
@@ -4102,6 +4143,59 @@ class TaskQueueWidget(QWidget):
             self._c_lay.insertWidget(self._c_lay.count() - 1, row)
 
 
+class ConfirmationWidget(QWidget):
+    """Inline approval surface for the currently displayed task confirmation."""
+
+    approve_requested = pyqtSignal(str)
+    deny_requested = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._task_id = ""
+        self.setStyleSheet(f"background: {C.CARD}; border: 1px solid {C.ACC}; border-radius: 4px;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        title = QLabel("JARVIS NEEDS CONFIRMATION")
+        title.setFont(QFont(DISPLAY_FONT, 9, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {C.ACC}; background: transparent; border: none;")
+        layout.addWidget(title)
+        self._details = QLabel()
+        self._details.setWordWrap(True)
+        self._details.setStyleSheet(f"color: {C.WHITE}; background: transparent; border: none;")
+        layout.addWidget(self._details)
+
+        buttons = QHBoxLayout()
+        approve = QPushButton("APPROVE")
+        deny = QPushButton("DENY")
+        for button in (approve, deny):
+            button.setFixedHeight(26)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        approve.setStyleSheet(f"color: {C.GREEN}; border: 1px solid {C.GREEN}; background: transparent;")
+        deny.setStyleSheet(f"color: {C.RED}; border: 1px solid {C.RED}; background: transparent;")
+        approve.clicked.connect(lambda: self.approve_requested.emit(self._task_id))
+        deny.clicked.connect(lambda: self.deny_requested.emit(self._task_id))
+        buttons.addWidget(approve)
+        buttons.addWidget(deny)
+        layout.addLayout(buttons)
+        self.hide()
+
+    def show_request(self, request):
+        self._task_id = str(request.task_id)
+        self._details.setText(
+            f"Task {request.task_id}\n"
+            f"Action: {request.tool}\n"
+            f"Reason: {request.explanation}\n"
+            f"Risk: {request.risk}"
+        )
+        self.show()
+
+    def resolve(self, request):
+        if str(request.task_id) == self._task_id:
+            self.hide()
+
+
 # ---------------------------------------------------------------------------
 # ToolLogWidget — shows tool execution history with status
 # ---------------------------------------------------------------------------
@@ -4257,8 +4351,15 @@ class MissionControlPanel(QWidget):
         self._stack.addWidget(self.log_widget)
 
         # Page 1: TASKS — task queue
+        tasks_page = QWidget()
+        tasks_layout = QVBoxLayout(tasks_page)
+        tasks_layout.setContentsMargins(0, 0, 0, 0)
+        tasks_layout.setSpacing(6)
+        self.confirmation_widget = ConfirmationWidget()
+        tasks_layout.addWidget(self.confirmation_widget)
         self.task_widget = TaskQueueWidget()
-        self._stack.addWidget(self.task_widget)
+        tasks_layout.addWidget(self.task_widget, stretch=1)
+        self._stack.addWidget(tasks_page)
 
         # Page 2: ASSETS — file drop zone (built externally, placeholder here)
         self._assets_page = QWidget()
@@ -6587,6 +6688,7 @@ class MainWindow(QMainWindow):
     _sub_hold_sig  = pyqtSignal()
     _mode_sig      = pyqtSignal(str)          # context mode for AIActivityCanvas
     _task_sig      = pyqtSignal(str, str)     # (task_name, status) for TaskQueueWidget
+    _confirmation_sig = pyqtSignal(object)
     _tool_sig      = pyqtSignal(str)          # tool log line for ToolLogWidget
     _theme_sig     = pyqtSignal(str)
     _graphics_sig  = pyqtSignal(str)
@@ -6611,6 +6713,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, face_path: str):
         super().__init__()
+        self._ready = False
         _load_bundled_fonts()
         self.setWindowTitle("J.A.R.V.I.S — MARK XXXIX")
         self.setMinimumSize(_MIN_W, _MIN_H)
@@ -6788,6 +6891,9 @@ class MainWindow(QMainWindow):
         self._sub_hold_sig.connect(self._subtitle.start_hold_timer)
         self._mode_sig.connect(self._ai_canvas.set_mode)
         self._task_sig.connect(self._mission.task_widget.push_task)
+        self._confirmation_sig.connect(self._handle_confirmation_event)
+        self._mission.confirmation_widget.approve_requested.connect(self._approve_confirmation)
+        self._mission.confirmation_widget.deny_requested.connect(self._deny_confirmation)
         self._tool_sig.connect(self._mission.tool_widget.push)
         self._theme_sig.connect(ThemeManager.set_theme)
         self._graphics_sig.connect(self._apply_graphics_quality_live)
@@ -6818,6 +6924,7 @@ class MainWindow(QMainWindow):
         self.on_voice_change = None
         self.on_tts_provider_change = None
         self._load_saved_voice()
+
         self._load_saved_tts()
 
         # ── System tray integration ──────────────────────────────────────────
@@ -6854,6 +6961,10 @@ class MainWindow(QMainWindow):
         except Exception:
             candidate_key = ""
             candidate_is_saved = False
+
+        if not candidate_key:
+            candidate_key = _read_candidate_api_key_from_config()
+            candidate_is_saved = bool(candidate_key)
 
         self._show_setup()
         if candidate_key and self._overlay:
@@ -6893,6 +7004,28 @@ class MainWindow(QMainWindow):
         sc_show_left.activated.connect(self._show_left_panel_popup)
         sc_show_right = QShortcut(QKeySequence("R"), self)
         sc_show_right.activated.connect(self._show_right_panel_popup)
+
+    def attach_confirmation_manager(self, manager) -> None:
+        """Attach the queue's shared manager without blocking the Qt thread."""
+        self._confirmation_manager = manager
+        manager.add_listener(self._confirmation_sig.emit)
+
+    def _handle_confirmation_event(self, request) -> None:
+        if getattr(request.status, "value", request.status) == "pending":
+            self._mission.confirmation_widget.show_request(request)
+        else:
+            self._mission.confirmation_widget.resolve(request)
+
+    def _approve_confirmation(self, task_id: str) -> None:
+        manager = getattr(self, "_confirmation_manager", None)
+        if manager:
+            manager.resolve(task_id, True)
+
+    def _deny_confirmation(self, task_id: str) -> None:
+        manager = getattr(self, "_confirmation_manager", None)
+        if manager:
+            manager.resolve(task_id, False)
+
     def closeEvent(self, event):
         # Minimize to tray instead of quitting (if tray is available)
         try:
@@ -8371,7 +8504,8 @@ class MainWindow(QMainWindow):
             cfg = json.loads(API_FILE.read_text(encoding="utf-8")) if API_FILE.exists() else {}
         except Exception:
             cfg = {}
-        cfg.pop("gemini_api_key", None)
+        if not isinstance(cfg, dict):
+            cfg = {}
         cfg["voice_name"] = voice_name
         try:
             os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -8593,16 +8727,13 @@ class MainWindow(QMainWindow):
                 pass
 
     def _check_config(self) -> bool:
-        if not API_FILE.exists(): return False
+        if not API_FILE.exists():
+            return False
         try:
             d = json.loads(API_FILE.read_text(encoding="utf-8"))
-            if "gemini_api_key" in d:
-                d.pop("gemini_api_key", None)
-                try:
-                    API_FILE.write_text(json.dumps(d, indent=4), encoding="utf-8")
-                except Exception:
-                    pass
-            return bool(d.get("os_system"))
+            if not isinstance(d, dict):
+                return False
+            return bool(d.get("gemini_api_key") or d.get("os_system"))
         except Exception:
             return False
 
@@ -8664,23 +8795,16 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self._log.append_log(f"SYS: Could not save key to keychain: {e}")
 
-        os.makedirs(CONFIG_DIR, exist_ok=True)
+        try:
+            _persist_api_key_config_for_setup(key, os_name, API_FILE)
+            self._log.append_log("SYS: Gemini API key saved to project config.")
+        except Exception as e:
+            self._log.append_log(f"SYS: Could not save key to config: {e}")
 
         try:
-            cfg = json.loads(API_FILE.read_text(encoding="utf-8")) if API_FILE.exists() else {}
-        except Exception:
-            cfg = {}
-        # Do NOT persist the Gemini API key to disk. Keep it in-memory for this session only.
-        cfg.pop("gemini_api_key", None)
-        cfg["os_system"] = os_name
-        API_FILE.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
-        try:
-            # Set the API key for this running process only. This ensures the key is
-            # available to modules that read `os.environ['GEMINI_API_KEY']` without
-            # writing it to disk — the user must re-enter it on next start.
             if isinstance(key, str) and key.strip():
                 os.environ["GEMINI_API_KEY"] = key.strip()
-                self._log.append_log("SYS: Gemini API key set for this session (not saved).")
+                self._log.append_log("SYS: Gemini API key set for this session.")
         except Exception:
             pass
         self._ready = True

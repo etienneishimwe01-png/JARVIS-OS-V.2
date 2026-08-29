@@ -17,6 +17,8 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 call .venv\Scripts\activate.bat
+set "JARVIS_CLI=1"
+set "JARVIS_SKIP_WAKE_GATE="
 
 if not exist ".venv\.jarvis_requirements.sha256" goto :install
 set NEEDS_INSTALL=0
@@ -52,5 +54,5 @@ if not errorlevel 1 (
 )
 
 echo [start_jarvis] Starting JARVIS...
-python main.py
+python -m main
 endlocal

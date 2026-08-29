@@ -2,6 +2,8 @@ import time
 import subprocess
 import platform
 import shutil
+import re
+from pathlib import Path
 
 try:
     import psutil
@@ -66,16 +68,22 @@ _APP_ALIASES: dict[str, dict[str, str]] = {
 
 
 def _normalize(raw: str) -> str:
-    key = raw.lower().strip()
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^(?:please\s+)?(?:open|launch|start)\s+", "", cleaned, flags=re.IGNORECASE)
+    key = cleaned.lower()
+
+    if " " in key:
+        return cleaned
 
     if key in _APP_ALIASES:
-        return _APP_ALIASES[key].get(_SYSTEM, raw)
+        return _APP_ALIASES[key].get(_SYSTEM, cleaned)
 
     for alias_key, os_map in _APP_ALIASES.items():
         if alias_key in key or key in alias_key:
-            return os_map.get(_SYSTEM, raw)
+            if key == alias_key:
+                return os_map.get(_SYSTEM, cleaned)
 
-    return raw  
+    return cleaned
 
 def _launch_windows(app_name: str) -> bool:
 
@@ -215,6 +223,33 @@ _OS_LAUNCHERS = {
     "Linux":   _launch_linux,
 }
 
+
+def _process_is_running(app_name: str) -> bool | None:
+    """Return whether a matching process exists, or None when inspection is unavailable."""
+    if not _PSUTIL or _SYSTEM != "Windows":
+        return None
+    candidate = app_name.lower().replace(".exe", "")
+    try:
+        for process in psutil.process_iter(["name", "exe"]):
+            values = {
+                str(process.info.get("name") or "").lower().replace(".exe", ""),
+                Path(str(process.info.get("exe") or "")).stem.lower(),
+            }
+            if candidate in values:
+                return True
+    except (psutil.Error, OSError):
+        return None
+    return False
+
+
+def _verify_launch(app_name: str) -> bool | None:
+    for _ in range(6):
+        running = _process_is_running(app_name)
+        if running is True or running is None:
+            return running
+        time.sleep(0.5)
+    return False
+
 def open_app(
     parameters=None,
     response=None,
@@ -238,10 +273,18 @@ def open_app(
 
     try:
         if launcher(normalized):
-            return f"Opened {app_name}."
+            verified = _verify_launch(normalized)
+            if verified is True:
+                return f"Opened {app_name} (verified running)."
+            if verified is None:
+                return f"Launch requested for {app_name}, but the running process could not be verified."
         if normalized.lower() != app_name.lower():
             if launcher(app_name):
-                return f"Opened {app_name}."
+                verified = _verify_launch(app_name)
+                if verified is True:
+                    return f"Opened {app_name} (verified running)."
+                if verified is None:
+                    return f"Launch requested for {app_name}, but the running process could not be verified."
         return (
             f"Could not confirm that {app_name} launched. "
             f"It may still be loading, or it might not be installed."

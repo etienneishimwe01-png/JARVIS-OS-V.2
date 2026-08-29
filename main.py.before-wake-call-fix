@@ -92,8 +92,9 @@ DEFAULT_VOICE_NAME   = "puck"
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 LIVE_VAD_SILENCE_MS = 200
-ACTIVATION_MESSAGE = "Please activate JARVIS to proceed"
-ACTIVATION_POLL_SECONDS = 0.05
+WAKE_PHRASE_KEYWORDS = ("jarvis", "activate")
+WAKE_PHRASE_LISTEN_SECONDS = 3.0
+WAKE_PHRASE_PHRASE_TIME_LIMIT = 4.0
 SELF_QUIT_GOODBYE = (
     "Certainly, sir. It has been a privilege. JARVIS is going offline now. "
     "Until next time."
@@ -106,11 +107,6 @@ _SELF_QUIT_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"\bjarvis\b.{0,36}\b(?:quit|close|exit|shut\s+down|turn\s+off|go\s+offline)\b",
     r"\b(?:go|take\s+yourself)\s+offline(?:\s+jarvis)?\b",
 ))
-
-
-def _period_is_down(key_state) -> bool:
-    """Return whether the period key is currently held down."""
-    return bool(key_state(0xBE) & 0x8000)
 
 
 def _exception_leaves(exc: BaseException):
@@ -161,49 +157,74 @@ def _live_response_audio_bytes(response) -> bytes | None:
     return None
 
 
-def wait_for_activation(*, timeout: float | None = None, key_state=None, sleep=time.sleep) -> bool:
-    """Hold startup until the global period-key activation shortcut is pressed."""
+def wait_for_wake_phrase(
+    keywords: tuple[str, ...] = WAKE_PHRASE_KEYWORDS,
+    *,
+    timeout: float | None = None,
+    recognizer_factory=None,
+    microphone_factory=None,
+) -> bool:
+    """Hold startup until the wake phrase (e.g. 'Jarvis, activate') is heard."""
     if os.environ.get("JARVIS_SKIP_WAKE_GATE", "").strip().lower() in {"1", "true", "yes", "on"}:
-        print("[JARVIS] Startup activation gate bypassed (JARVIS_SKIP_WAKE_GATE).")
+        print("[JARVIS] Startup wake-phrase gate bypassed (JARVIS_SKIP_WAKE_GATE).")
         return True
 
-    if os.name != "nt":
-        print("[JARVIS] Ctrl+. activation is currently supported on Windows only.")
+    try:
+        import speech_recognition as sr
+    except ImportError:
+        print("[JARVIS] Startup wake-phrase gate needs SpeechRecognition. Set JARVIS_SKIP_WAKE_GATE=1 to bypass.")
         return False
 
-    if key_state is None:
-        import ctypes
-        key_state = ctypes.windll.user32.GetAsyncKeyState
+    recognizer = (recognizer_factory or sr.Recognizer)()
+    microphone_factory = microphone_factory or sr.Microphone
 
-    print(f"[JARVIS] {ACTIVATION_MESSAGE}")
+    print("[JARVIS] Waiting for you to say \"Jarvis, activate\"...")
     started_at = time.monotonic()
+
     try:
-        while True:
-            if _period_is_down(key_state):
-                print("[JARVIS] Period key detected. Powering up...")
-                return True
-            if timeout is not None and time.monotonic() - started_at >= timeout:
-                print("[JARVIS] Startup activation gate timed out.")
-                return False
-            sleep(ACTIVATION_POLL_SECONDS)
+        with microphone_factory() as source:
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            while True:
+                if timeout is not None and time.monotonic() - started_at >= timeout:
+                    print("[JARVIS] Startup wake-phrase gate timed out.")
+                    return False
+                try:
+                    audio = recognizer.listen(
+                        source,
+                        timeout=WAKE_PHRASE_LISTEN_SECONDS,
+                        phrase_time_limit=WAKE_PHRASE_PHRASE_TIME_LIMIT,
+                    )
+                except sr.WaitTimeoutError:
+                    continue
+                try:
+                    transcript = recognizer.recognize_google(audio).strip().lower()
+                except sr.UnknownValueError:
+                    continue
+                except sr.RequestError as exc:
+                    print(f"[JARVIS] Wake-phrase recognition service unavailable: {exc}")
+                    if os.environ.get("JARVIS_REQUIRE_WAKE_GATE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+                        print("[JARVIS] Continuing without the wake-phrase gate; recognition service is unavailable.")
+                        return True
+                    return False
+                if transcript:
+                    print(f"[JARVIS] Heard: \"{transcript}\"")
+                if all(keyword in transcript for keyword in keywords):
+                    print("[JARVIS] Wake phrase detected. Powering up...")
+                    return True
     except KeyboardInterrupt:
         print("\n[JARVIS] Startup cancelled.")
         return False
     except Exception as exc:
-        print(f"[JARVIS] Startup activation shortcut unavailable: {exc}")
+        print(f"[JARVIS] Startup wake-phrase microphone unavailable: {exc}")
+        if os.environ.get("JARVIS_REQUIRE_WAKE_GATE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            print("[JARVIS] Continuing without the wake-phrase gate; microphone input is unavailable.")
+            print("[JARVIS] Restore microphone access to use voice activation.")
+            return True
+        print("[JARVIS] Wake-phrase gate required. Set JARVIS_SKIP_WAKE_GATE=1 to bypass it.")
         return False
-
-
-    wait_for_wake_phrase = wait_for_activation
 
 def _get_api_key() -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        try:
-            from memory.config_manager import get_gemini_key
-            api_key = get_gemini_key()
-        except Exception:
-            api_key = None
     if not api_key:
         raise ValueError("GEMINI_API_KEY environment variable not set. Please set it to your Gemini API key.")
     return api_key
@@ -478,16 +499,15 @@ TOOL_DECLARATIONS = [
         "description": (
             "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
             "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
-                "sleep, hibernate, scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
+            "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
             "Use for ANY single computer control command. NEVER route to agent_task."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "enum": ["volume_up", "volume_down", "mute", "unmute", "toggle_mute", "volume_set", "brightness_up", "brightness_down", "sleep", "sleep_display", "screen_off", "hibernate", "lock_screen", "shutdown", "restart", "close_app", "close_window", "open_settings", "file_explorer", "toggle_wifi", "full_screen", "minimize", "maximize", "show_desktop", "task_manager", "focus_search", "refresh_page", "reload", "screenshot", "scroll_up", "scroll_down", "new_tab", "close_tab", "next_tab", "prev_tab", "go_back", "go_forward", "zoom_in", "zoom_out", "zoom_reset", "find_on_page", "type_text", "press_key"], "description": "The action to perform"},
+                "action":      {"type": "STRING", "description": "The action to perform"},
                 "description": {"type": "STRING", "description": "Natural language description of what to do"},
-                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."},
-                "confirmed":   {"type": "STRING", "enum": ["yes"], "description": "Required only after JARVIS asks for confirmation of shutdown, restart, or hibernate."}
+                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."}
             },
             "required": []
         }
@@ -1078,12 +1098,10 @@ class JarvisLive:
 
     async def send_text(self, text: str) -> bool:
         """Send a text turn from either the desktop callback or a web client."""
+        if not self.session:
+            return False
         self._current_input_transcript = str(text or "").strip()
         if not self._current_input_transcript:
-            return False
-        if self._handle_confirmation_response(self._current_input_transcript):
-            return True
-        if not self.session:
             return False
         self._last_input_transcript = self._current_input_transcript
         self._last_input_transcript_at = time.monotonic()
@@ -1101,40 +1119,6 @@ class JarvisLive:
             turns={"parts": [{"text": outgoing_text}]},
             turn_complete=True,
         )
-        return True
-
-    def _handle_confirmation_response(self, text: str) -> bool:
-        """Resolve only an actively pending confirmation, never ordinary speech."""
-        from agent.task_queue import get_queue
-
-        pending = get_queue().pending_confirmations()
-        if not pending:
-            return False
-
-        normalized = re.sub(r"[^a-z0-9-]+", " ", str(text).lower()).strip()
-        approved = bool(re.search(r"\b(?:yes|approve|approved|confirm|confirmed|go ahead)\b", normalized))
-        denied = bool(re.search(r"\b(?:no|deny|denied|cancel|stop)\b", normalized))
-        if approved and denied:
-            approved = denied = False
-
-        selected = None
-        for request in pending:
-            if request.task_id.lower() in normalized or request.confirmation_id.lower() in normalized:
-                selected = request
-                break
-        if len(pending) > 1 and selected is None:
-            self.speak("Multiple actions are waiting. Please say the task ID you want to approve or cancel.")
-            return True
-        selected = selected or pending[0]
-        if approved:
-            get_queue().approve(selected.task_id)
-        elif denied:
-            get_queue().deny(selected.task_id)
-        else:
-            self.speak(
-                f"I did not interpret that as approval for task {selected.task_id}. "
-                "Please say yes to approve or no to cancel."
-            )
         return True
 
     async def send_audio_chunk(
@@ -1529,10 +1513,6 @@ class JarvisLive:
                 result = "Vision module activated. Stay completely silent — vision module will speak directly."
 
             elif name == "computer_settings":
-                power_actions = {"shutdown", "restart", "hibernate"}
-                requested_action = str(args.get("action") or "").strip().lower()
-                if requested_action in power_actions and not args.get("description"):
-                    args["description"] = self._current_input_transcript
                 r = await asyncio.to_thread(lambda: computer_settings(parameters=args, response=None, player=self.ui))
                 result = r or "Done."
 
@@ -1767,19 +1747,12 @@ class JarvisLive:
                                 self._current_input_transcript = full_in
                                 self._last_input_transcript = full_in
                                 self._last_input_transcript_at = time.monotonic()
-                                confirmation_handled = self._handle_confirmation_response(full_in)
                                 if (
                                     not getattr(self, "_pending_self_quit", False)
                                     and self._is_explicit_self_quit_transcript(full_in)
                                 ):
                                     self._queue_self_quit_after_farewell()
                                 self.ui.write_log(f"You: {full_in}")
-                                if confirmation_handled:
-                                    in_buf = []
-                                    out_buf = []
-                                    turn_had_audio = False
-                                    _new_turn = True
-                                    continue
                             in_buf = []
 
                             full_out = " ".join(out_buf).strip()
@@ -1994,7 +1967,7 @@ def main():
     if os.environ.get("JARVIS_CLI") != "1" and not running_as_app:
         print("[JARVIS] Please launch with the JARVIS CLI: jarvis")
         return
-    if not wait_for_activation():
+    if not wait_for_startup_claps():
         return
     print("[JARVIS] ⚡ Powering up the interface...")
     try:

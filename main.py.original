@@ -92,8 +92,9 @@ DEFAULT_VOICE_NAME   = "puck"
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 LIVE_VAD_SILENCE_MS = 200
-ACTIVATION_MESSAGE = "Please activate JARVIS to proceed"
-ACTIVATION_POLL_SECONDS = 0.05
+STARTUP_CLAPS_REQUIRED = 2
+STARTUP_CLAP_MAX_GAP_SECONDS = 4.0
+STARTUP_CLAP_COOLDOWN_SECONDS = 0.22
 SELF_QUIT_GOODBYE = (
     "Certainly, sir. It has been a privilege. JARVIS is going offline now. "
     "Until next time."
@@ -106,11 +107,6 @@ _SELF_QUIT_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"\bjarvis\b.{0,36}\b(?:quit|close|exit|shut\s+down|turn\s+off|go\s+offline)\b",
     r"\b(?:go|take\s+yourself)\s+offline(?:\s+jarvis)?\b",
 ))
-
-
-def _period_is_down(key_state) -> bool:
-    """Return whether the period key is currently held down."""
-    return bool(key_state(0xBE) & 0x8000)
 
 
 def _exception_leaves(exc: BaseException):
@@ -161,49 +157,160 @@ def _live_response_audio_bytes(response) -> bytes | None:
     return None
 
 
-def wait_for_activation(*, timeout: float | None = None, key_state=None, sleep=time.sleep) -> bool:
-    """Hold startup until the global period-key activation shortcut is pressed."""
-    if os.environ.get("JARVIS_SKIP_WAKE_GATE", "").strip().lower() in {"1", "true", "yes", "on"}:
-        print("[JARVIS] Startup activation gate bypassed (JARVIS_SKIP_WAKE_GATE).")
+def wait_for_startup_claps(
+    required: int = STARTUP_CLAPS_REQUIRED,
+    *,
+    timeout: float | None = None,
+    stream_factory=None,
+) -> bool:
+    """Hold startup until two distinct claps are heard by the default microphone."""
+    if os.environ.get("JARVIS_SKIP_CLAP_GATE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        print("[JARVIS] 👏 Startup clap gate bypassed (JARVIS_SKIP_CLAP_GATE).")
+        return True
+    # Some macOS/AUHAL configurations expose a nominal input device but reject
+    # every PortAudio operation (PaErrorCode -9986). Avoid repeatedly starting
+    # a failing Core Audio stream; users with a working mic can opt in.
+    if sys.platform == "darwin" and stream_factory is None and os.environ.get("JARVIS_ENABLE_CLAP_GATE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        print("[JARVIS] ⚠️ macOS microphone gate disabled for this audio configuration.")
+        print("[JARVIS] Continuing without clap startup. Set JARVIS_ENABLE_CLAP_GATE=1 to force it.")
         return True
 
-    if os.name != "nt":
-        print("[JARVIS] Ctrl+. activation is currently supported on Windows only.")
+    required = max(1, int(required))
+    stream_factory = stream_factory or sd.InputStream
+    try:
+        import numpy as np
+    except ImportError:
+        print("[JARVIS] ❌ Startup clap gate needs numpy. Set JARVIS_SKIP_CLAP_GATE=1 to bypass.")
         return False
 
-    if key_state is None:
-        import ctypes
-        key_state = ctypes.windll.user32.GetAsyncKeyState
-
-    print(f"[JARVIS] {ACTIVATION_MESSAGE}")
+    clap_times: list[float] = []
+    last_clap_at = 0.0
+    # Microphone input levels vary considerably between Mac models.  The old
+    # fixed 0.12 RMS / 0.32 peak gates rejected quiet real claps, while laptop
+    # fan noise could sometimes trip them.  Track the room floor and use both
+    # transient shape (crest factor) and energy to identify a clap.
+    noise_floor = 0.008
+    finished = threading.Event()
     started_at = time.monotonic()
+
+    def callback(indata, frames, time_info, status):
+        nonlocal last_clap_at, noise_floor, clap_times
+        if status:
+            print(f"[JARVIS] ⚠️ Clap mic: {status}")
+        samples = np.asarray(indata, dtype=np.float32).reshape(-1)
+        if samples.size == 0:
+            return
+        magnitude = np.abs(samples)
+        rms = float(np.sqrt(np.mean(samples * samples)))
+        peak = float(np.max(magnitude))
+        # Only let low-energy frames teach the noise floor; otherwise a clap
+        # would raise the threshold immediately and make the second clap hard
+        # to detect.
+        if rms < max(0.08, noise_floor * 6.0):
+            noise_floor = (noise_floor * 0.96) + (rms * 0.04)
+        threshold = max(0.100, noise_floor * 6.5)
+        peak_threshold = max(0.35, noise_floor * 15.0)
+        crest_factor = peak / max(rms, 1e-6)
+        now = time.monotonic()
+        # A valid clap must be either a sharp transient with meaningful energy
+        # or a genuinely loud impact. This rejects speech, fan noise, and most
+        # desk/keyboard taps that only have a brief peak.
+        is_transient = crest_factor >= 2.20 and rms >= threshold
+        is_loud = rms >= max(0.28, noise_floor * 15.0)
+        if (
+            peak < peak_threshold
+            or not (is_transient or is_loud)
+            or now - last_clap_at < STARTUP_CLAP_COOLDOWN_SECONDS
+        ):
+            return
+        if clap_times and now - clap_times[-1] > STARTUP_CLAP_MAX_GAP_SECONDS:
+            clap_times = []
+        clap_times.append(now)
+        last_clap_at = now
+        print(f"[JARVIS] 👏 Clap {len(clap_times)}/{required} detected")
+        if len(clap_times) >= required:
+            finished.set()
+
+    print(f"[JARVIS] 👏 Waiting for {required} claps to power up...")
+    # PortAudio on macOS commonly rejects 16 kHz even when the microphone is
+    # available (PaErrorCode -9986). Prefer the device's native rate, then
+    # retry standard rates before reporting that the microphone is unavailable.
+    sample_rates = [SEND_SAMPLE_RATE, 44100, 48000]
+    input_device = None
     try:
-        while True:
-            if _period_is_down(key_state):
-                print("[JARVIS] Period key detected. Powering up...")
-                return True
-            if timeout is not None and time.monotonic() - started_at >= timeout:
-                print("[JARVIS] Startup activation gate timed out.")
-                return False
-            sleep(ACTIVATION_POLL_SECONDS)
+        if stream_factory is sd.InputStream:
+            try:
+                default_device = sd.default.device
+                try:
+                    input_index = int(default_device[0])
+                except (TypeError, IndexError, ValueError):
+                    input_index = -1
+                if input_index < 0:
+                    print("[JARVIS] ⚠️ macOS reports no default microphone device.")
+                    if os.environ.get("JARVIS_REQUIRE_CLAP_GATE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+                        print("[JARVIS] ⚠️ Continuing without the clap gate; microphone input is unavailable.")
+                        return True
+                    raise RuntimeError("no default microphone device")
+                input_device = input_index
+                device = sd.query_devices(input_device if input_device is not None else None, "input")
+                if int(device.get("max_input_channels", 0)) < 1:
+                    raise RuntimeError("no input channels are available")
+                native_rate = int(float(device.get("default_samplerate", 0)))
+                if native_rate > 0:
+                    sample_rates.insert(0, native_rate)
+            except Exception:
+                pass
+        sample_rates = list(dict.fromkeys(sample_rates))
+        last_error = None
+        for sample_rate in sample_rates:
+            try:
+                if stream_factory is sd.InputStream:
+                    # Validate the format before constructing a live AUHAL
+                    # stream; macOS can report a device but reject it with
+                    # PaErrorCode -9986 during stream startup.
+                    sd.check_input_settings(
+                        device=input_device,
+                        samplerate=sample_rate,
+                        channels=CHANNELS,
+                        dtype="float32",
+                    )
+                with stream_factory(
+                    samplerate=sample_rate,
+                    device=input_device,
+                    channels=CHANNELS,
+                    dtype="float32",
+                    blocksize=0,
+                    latency="high",
+                    callback=callback,
+                ):
+                    while not finished.wait(0.05):
+                        if timeout is not None and time.monotonic() - started_at >= timeout:
+                            print("[JARVIS] ⏱️ Startup clap gate timed out.")
+                            return False
+                break
+            except Exception as exc:
+                last_error = exc
+                if finished.is_set():
+                    break
+        else:
+            raise last_error or RuntimeError("no compatible microphone sample rate")
     except KeyboardInterrupt:
         print("\n[JARVIS] Startup cancelled.")
         return False
     except Exception as exc:
-        print(f"[JARVIS] Startup activation shortcut unavailable: {exc}")
+        print(f"[JARVIS] ❌ Startup clap microphone unavailable: {exc}")
+        if os.environ.get("JARVIS_REQUIRE_CLAP_GATE", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            print("[JARVIS] ⚠️ Continuing without the clap gate; microphone input is unavailable.")
+            print("[JARVIS] Restore microphone access to use voice input.")
+            return True
+        print("[JARVIS] Clap gate required. Set JARVIS_SKIP_CLAP_GATE=1 to bypass it.")
         return False
 
-
-    wait_for_wake_phrase = wait_for_activation
+    print("[JARVIS] ⚡ Two claps detected. Powering up...")
+    return True
 
 def _get_api_key() -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        try:
-            from memory.config_manager import get_gemini_key
-            api_key = get_gemini_key()
-        except Exception:
-            api_key = None
     if not api_key:
         raise ValueError("GEMINI_API_KEY environment variable not set. Please set it to your Gemini API key.")
     return api_key
@@ -478,16 +585,15 @@ TOOL_DECLARATIONS = [
         "description": (
             "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
             "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
-                "sleep, hibernate, scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
+            "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
             "Use for ANY single computer control command. NEVER route to agent_task."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "enum": ["volume_up", "volume_down", "mute", "unmute", "toggle_mute", "volume_set", "brightness_up", "brightness_down", "sleep", "sleep_display", "screen_off", "hibernate", "lock_screen", "shutdown", "restart", "close_app", "close_window", "open_settings", "file_explorer", "toggle_wifi", "full_screen", "minimize", "maximize", "show_desktop", "task_manager", "focus_search", "refresh_page", "reload", "screenshot", "scroll_up", "scroll_down", "new_tab", "close_tab", "next_tab", "prev_tab", "go_back", "go_forward", "zoom_in", "zoom_out", "zoom_reset", "find_on_page", "type_text", "press_key"], "description": "The action to perform"},
+                "action":      {"type": "STRING", "description": "The action to perform"},
                 "description": {"type": "STRING", "description": "Natural language description of what to do"},
-                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."},
-                "confirmed":   {"type": "STRING", "enum": ["yes"], "description": "Required only after JARVIS asks for confirmation of shutdown, restart, or hibernate."}
+                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."}
             },
             "required": []
         }
@@ -1078,12 +1184,10 @@ class JarvisLive:
 
     async def send_text(self, text: str) -> bool:
         """Send a text turn from either the desktop callback or a web client."""
+        if not self.session:
+            return False
         self._current_input_transcript = str(text or "").strip()
         if not self._current_input_transcript:
-            return False
-        if self._handle_confirmation_response(self._current_input_transcript):
-            return True
-        if not self.session:
             return False
         self._last_input_transcript = self._current_input_transcript
         self._last_input_transcript_at = time.monotonic()
@@ -1101,40 +1205,6 @@ class JarvisLive:
             turns={"parts": [{"text": outgoing_text}]},
             turn_complete=True,
         )
-        return True
-
-    def _handle_confirmation_response(self, text: str) -> bool:
-        """Resolve only an actively pending confirmation, never ordinary speech."""
-        from agent.task_queue import get_queue
-
-        pending = get_queue().pending_confirmations()
-        if not pending:
-            return False
-
-        normalized = re.sub(r"[^a-z0-9-]+", " ", str(text).lower()).strip()
-        approved = bool(re.search(r"\b(?:yes|approve|approved|confirm|confirmed|go ahead)\b", normalized))
-        denied = bool(re.search(r"\b(?:no|deny|denied|cancel|stop)\b", normalized))
-        if approved and denied:
-            approved = denied = False
-
-        selected = None
-        for request in pending:
-            if request.task_id.lower() in normalized or request.confirmation_id.lower() in normalized:
-                selected = request
-                break
-        if len(pending) > 1 and selected is None:
-            self.speak("Multiple actions are waiting. Please say the task ID you want to approve or cancel.")
-            return True
-        selected = selected or pending[0]
-        if approved:
-            get_queue().approve(selected.task_id)
-        elif denied:
-            get_queue().deny(selected.task_id)
-        else:
-            self.speak(
-                f"I did not interpret that as approval for task {selected.task_id}. "
-                "Please say yes to approve or no to cancel."
-            )
         return True
 
     async def send_audio_chunk(
@@ -1529,10 +1599,6 @@ class JarvisLive:
                 result = "Vision module activated. Stay completely silent — vision module will speak directly."
 
             elif name == "computer_settings":
-                power_actions = {"shutdown", "restart", "hibernate"}
-                requested_action = str(args.get("action") or "").strip().lower()
-                if requested_action in power_actions and not args.get("description"):
-                    args["description"] = self._current_input_transcript
                 r = await asyncio.to_thread(lambda: computer_settings(parameters=args, response=None, player=self.ui))
                 result = r or "Done."
 
@@ -1767,19 +1833,12 @@ class JarvisLive:
                                 self._current_input_transcript = full_in
                                 self._last_input_transcript = full_in
                                 self._last_input_transcript_at = time.monotonic()
-                                confirmation_handled = self._handle_confirmation_response(full_in)
                                 if (
                                     not getattr(self, "_pending_self_quit", False)
                                     and self._is_explicit_self_quit_transcript(full_in)
                                 ):
                                     self._queue_self_quit_after_farewell()
                                 self.ui.write_log(f"You: {full_in}")
-                                if confirmation_handled:
-                                    in_buf = []
-                                    out_buf = []
-                                    turn_had_audio = False
-                                    _new_turn = True
-                                    continue
                             in_buf = []
 
                             full_out = " ".join(out_buf).strip()
@@ -1994,7 +2053,7 @@ def main():
     if os.environ.get("JARVIS_CLI") != "1" and not running_as_app:
         print("[JARVIS] Please launch with the JARVIS CLI: jarvis")
         return
-    if not wait_for_activation():
+    if not wait_for_startup_claps():
         return
     print("[JARVIS] ⚡ Powering up the interface...")
     try:

@@ -446,6 +446,26 @@ def sleep_display():
     else:
         subprocess.run(["xset", "dpms", "force", "off"], capture_output=True)
 
+def sleep_computer():
+    if _OS == "Windows":
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "Add-Type -AssemblyName System.Windows.Forms; "
+             "[System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)"],
+            capture_output=True,
+        )
+    elif _OS == "Darwin":
+        subprocess.run(["pmset", "sleepnow"], capture_output=True)
+    else:
+        subprocess.run(["systemctl", "suspend"], capture_output=True)
+
+def hibernate_computer():
+    if _OS == "Windows":
+        subprocess.run(["shutdown", "/h"], capture_output=True)
+    elif _OS == "Darwin":
+        return sleep_computer()
+    else:
+        subprocess.run(["systemctl", "hibernate"], capture_output=True)
+
 def open_run():
     if _OS == "Windows":
         pyautogui.hotkey("win", "r")
@@ -541,6 +561,8 @@ ACTION_MAP: dict[str, callable] = {
     "brightness_down":     brightness_down,
     "sleep_display":       sleep_display,
     "screen_off":          sleep_display,
+    "sleep":               sleep_computer,
+    "hibernate":           hibernate_computer,
     "pause_video":         pause_video,
     "play_pause":          pause_video,
     "close_app":           close_app,
@@ -594,7 +616,7 @@ ACTION_MAP: dict[str, callable] = {
     "shutdown":            shutdown_computer,
 }
 
-_DANGEROUS_ACTIONS = {"restart", "shutdown"}
+_DANGEROUS_ACTIONS = {"restart", "shutdown", "hibernate"}
 
 
 def _power_target_text(params: dict, description: str, value) -> str:

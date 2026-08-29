@@ -32,6 +32,7 @@ PyMuPDF
 requests
 send2trash
 sounddevice
+SpeechRecognition
 youtube-transcript-api
 fastapi
 uvicorn[standard]
