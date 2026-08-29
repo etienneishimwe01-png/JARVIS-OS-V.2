@@ -1,17 +1,42 @@
 # JARVIS OS V2
 
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![PyQt6](https://img.shields.io/badge/PyQt6-Desktop%20UI-41CD52)
+![Gemini](https://img.shields.io/badge/Gemini-Live%20AI-8B5CF6)
+![License](https://img.shields.io/badge/License-MIT-green)
+
 JARVIS OS V2 is a Python desktop assistant with a PyQt6 interface, Gemini Live conversational workflow, local file and browser integrations, and a presentation studio for building editable PowerPoint decks.
 
 It is designed to act as a local AI assistant for research, automation, file work, screen understanding, and computer control across supported desktop environments.
 
-## Features
+## Screenshot
 
-- Voice-first AI interaction with Gemini Live
-- Local desktop UI and system control helpers
-- File, browser, screen, media, and messaging actions
-- Presentation generation and refinement workflows
-- FastAPI + Next.js web app support for hosted deployments
-- CLI launcher and self-test routines for local validation
+![JARVIS OS V2 preview](assets/jarvis-preview.svg)
+
+## How it works
+
+```mermaid
+flowchart LR
+    U[User] --> UI[PyQt6 Desktop UI]
+    UI --> A[Voice + Agent Runtime]
+    A --> G[Gemini Live Model]
+    A --> C[Actions / Tools]
+    C --> F[Files / Browser / Screen / Messages]
+    C --> P[Presentation Studio]
+    A --> M[Memory + Config]
+```
+
+## Feature grid
+
+| Capability | Description |
+| --- | --- |
+| Voice assistant | Real-time conversational AI via Gemini Live |
+| Desktop control | Launch apps, automate work, manage local files |
+| Research & browsing | Search, summarize, and inspect pages and documents |
+| Screen intelligence | Read and interpret content from the local desktop |
+| Presentation builder | Generate editable .pptx decks from documents and media |
+| Web app support | Local or hosted FastAPI + Next.js architecture |
+| Safety checks | Self-test workflows and local validation for deployment |
 
 ## Requirements
 
