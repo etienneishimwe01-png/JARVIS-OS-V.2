@@ -1,162 +1,112 @@
-# JARVIS
+# JARVIS OS V2
 
-Local Gemini Live desktop assistant with a PyQt6 interface, voice interaction, detachable panels, and optional browser, file, screen, and messaging tools.
+JARVIS OS V2 is a Python desktop assistant with a PyQt6 interface, Gemini Live conversational workflow, local file and browser integrations, and a presentation studio for building editable PowerPoint decks.
 
-JARVIS also includes a dedicated presentation studio that creates, edits,
-redesigns, and extends editable widescreen `.pptx` decks from documents, data,
-images, audio, and video, with optional PDF export. See the
-[usage guide](docs/USAGE.md#6-powerpoint-presentations) for examples.
+It is designed to act as a local AI assistant for research, automation, file work, screen understanding, and computer control across supported desktop environments.
+
+## Features
+
+- Voice-first AI interaction with Gemini Live
+- Local desktop UI and system control helpers
+- File, browser, screen, media, and messaging actions
+- Presentation generation and refinement workflows
+- FastAPI + Next.js web app support for hosted deployments
+- CLI launcher and self-test routines for local validation
 
 ## Requirements
 
-You need **Python 3.11 or newer** installed to set up and run JARVIS. Confirm
-your Python version before continuing:
+- Python 3.11 or newer
+- Git
+- A valid Gemini API key
+
+Check your Python version:
 
 ```bash
 python --version
 ```
 
-## Quick start (Windows, macOS, Linux)
+## Quick start
 
-In Terminal, run:
+Clone the repository:
 
 ```bash
-git clone https://github.com/MAL19INDUSTRIES/JARVIS-OS-V.2.git
+git clone https://github.com/etienneishimwe01-png/JARVIS-OS-V.2.git
 cd JARVIS-OS-V.2
-python scripts/setup_jarvis.py
 ```
 
-On Windows, you can double-click `scripts/setup_jarvis.bat` instead.
-
-Open `.env`, add your `GEMINI_API_KEY`, then launch JARVIS:
+Create a virtual environment and install dependencies:
 
 ```bash
-jarvis
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-To create a desktop shortcut after setup, run PowerShell from the project root:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\create_jarvis_shortcut.ps1
-```
-
-The shortcut uses the project icon, starts in the project directory, and runs
-the canonical Windows launcher. The launcher activates `.venv`, installs only
-when dependencies changed, checks `.env`, and starts the real desktop UI.
-
-You only need to run setup once. Activate `.venv` when opening a new terminal,
-then type `jarvis`.
-
-JARVIS's core UI, Gemini connection, presentations, research, files, and CLI are
-cross-platform. Some computer-control, email, media, and browser integrations
-depend on permissions and available applications on each operating system.
-
-## Hosted web application
-
-The repository also contains a multi-user FastAPI service and a Next.js web
-client. Hosted sessions use Postgres for user-scoped memory and configuration,
-Redis for request quotas, encrypted per-user Gemini keys, and Gemini Live over
-an authenticated WebSocket. The desktop launcher continues to use its local
-stores and full local action inventory.
-
-Start the complete local web stack with Docker:
+On macOS or Linux, use:
 
 ```bash
-docker compose up --build
-```
-
-Then open `http://localhost:3000`. To run each service directly:
-
-```bash
-# API
-cp .env.example .env
-alembic upgrade head
-uvicorn api.server:app --reload
-
-# Web client
-cd web
-cp .env.example .env.local
-npm install
-npm run dev
-```
-
-Production templates are included for Fly.io (`fly.toml`), Render
-(`render.yaml`), and Vercel (`web/vercel.json`). Configure `DATABASE_URL`,
-`REDIS_URL`, `JWT_SECRET`, `JARVIS_ENCRYPTION_KEY`, and `CORS_ORIGINS` on the
-API host. Configure `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` on Vercel.
-The deployment workflow runs manually after the Fly and Vercel repository
-secrets have been added.
-
-## Manual setup
-
-```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -r requirements.txt
-cp .env.example .env
-./scripts/install_jarvis_cli.sh
-jarvis
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-Set `GEMINI_API_KEY` in `.env` before launch. Optional settings such as voice and local API keys are documented in `.env.example`.
+Set up your local config and API key:
 
-### Launch with `jarvis`
+- Copy the example environment file if needed
+- Add your Gemini API key in your local config or environment
+- Do not commit secret values to Git
 
-The CLI launcher is included in this repository. After cloning and completing
-the one-time setup, install it for your user with:
+Then launch:
 
 ```bash
-./scripts/install_jarvis_cli.sh
+python main.py
 ```
 
-Open a new terminal (or reload your shell profile), then start JARVIS with:
+Or use the CLI launcher after setup:
 
 ```bash
 jarvis
 ```
 
-Before packaging or releasing the desktop app, run the side-effect-safe
-capability audit:
+## Local configuration and secrets
 
-```bash
-jarvis --self-test
-```
+This repository intentionally ignores local secrets and generated runtime files. Confirm that files such as these stay out of version control:
 
-The audit exercises voice/tool contracts, messaging routing and approval
-boundaries, a local browser interaction, isolated file operations, vision,
-agent recovery, and memory. It never sends a real message or performs a live
-desktop mutation. Results that still require a person, account, or physical
-device are labeled `LIVE CHECK REQUIRED`, and a JSON report is written under
-`.qa-artifacts/`.
+- .env
+- config/api_keys.json
+- config/ui_settings.json
+- config/layout_settings.json
+- memory/long_term.json
+- memory/task_history.json
 
-Alternatively, from an activated virtual environment, `python3 -m pip install -e .`
-installs the same `jarvis` command through the standard Python package entry point.
+## Project structure
+
+- main.py — startup entry point
+- ui.py — desktop interface
+- actions/ — app capabilities and integrations
+- agent/ — task routing and execution logic
+- api/ — backend FastAPI service
+- web/ — Next.js frontend
+- memory/ — local memory/config storage
+- docs/ — usage and QA documentation
+- tests/ — automated checks
 
 ## Documentation
 
-- [Usage guide](docs/USAGE.md)
-- [Tutorial](docs/TUTORIAL.md)
-- [Complete QA and bug-audit guide](docs/QA.md)
-- [Contribution notes](CONTRIBUTING.md)
+- [docs/USAGE.md](docs/USAGE.md)
+- [docs/TUTORIAL.md](docs/TUTORIAL.md)
+- [docs/QA.md](docs/QA.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
 
-## Configuration files
+## Safety and publishing checklist
 
-Template files are included for local setup:
-
-- `.env.example`
-- `config/api_keys.example.json`
-- `config/layout_settings.example.json`
-- `config/ui_settings.example.json`
-- `memory/long_term.example.json`
-- `memory/task_history.example.json`
-
-## Publishing checklist
-
-- Keep `.env` and local secret files out of git.
-- Do not commit `memory/long_term.json` or `config/api_keys.json`.
-- Run `python3 -m py_compile main.py ui.py` before tagging a release.
+- Keep API keys and local config files out of Git
+- Review .gitignore before every release
+- Use the self-test workflow before packaging or publishing
+- Never commit generated logs, session caches, or local secrets
 
 ## License
 
-MIT License, see [LICENSE](LICENSE).
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
